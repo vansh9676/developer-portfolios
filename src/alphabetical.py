@@ -1,4 +1,5 @@
 import re
+import json
 from collections import defaultdict
 from urllib.parse import urlparse, urlunparse
 
@@ -30,7 +31,19 @@ def convert_to_title_case(readme_text):
             # fall back to the original behavior (title-case the original text)
             return f"[{inner.title()}]"
         processed = " ".join(cleaned_tokens).strip()
-        return f"[{processed.title()}]"
+
+        # Preserve words with internal capitals (like DevOps, GitHub, PostgreSQL, GenAI, etc.)
+        # and fully uppercase words (like PERN, API, SQL, etc.)
+        result_tokens = []
+        for token in processed.split():
+            # Check if the word has uppercase letters after the first character (e.g. DevOps, GenAI)
+            # OR if the entire word is uppercase (e.g. PERN, API, SQL)
+            if len(token) > 1 and (any(c.isupper() for c in token[1:]) or token.isupper()):
+                result_tokens.append(token)  # keep as-is
+            else:
+                result_tokens.append(token.title())  # apply title case
+
+        return f"[{' '.join(result_tokens)}]"
 
     # Use a lookahead to ensure we only match bracket text that precedes a (
     return re.sub(r"\[([^]]+)](?=\()", _tc_match, readme_text)
@@ -407,6 +420,60 @@ def remove_exact_duplicate_links(lines):
     return result, removed
 
 
+def extract_portfolio_data(lines):
+    """
+    Extract portfolio data from README lines.
+    Returns a list of dictionaries with name, url, and optional tagline.
+
+    Format expected:
+    - [Name](url)
+    - [Name](url) [tagline]
+    """
+    portfolios = []
+    # Regex to match markdown links with optional tagline
+    # Pattern: - [name](url) optional[tagline]
+    pattern = re.compile(r'^-\s+\[([^\]]+)\]\(([^)]+)\)(?:\s+\[([^\]]*)\])?')
+
+    for line in lines:
+        match = pattern.match(line.strip())
+        if match:
+            name = match.group(1).strip()
+            url = match.group(2).strip()
+            tagline = match.group(3).strip() if match.group(3) else None
+
+            portfolio_entry = {
+                "name": name,
+                "url": url
+            }
+
+            if tagline:
+                portfolio_entry["tagline"] = tagline
+
+            portfolios.append(portfolio_entry)
+
+    return portfolios
+
+
+def create_feed_json(readme_path="README.md", output_path="feed.json"):
+    """
+    Read README.md and create/update feed.json with portfolio data.
+    Returns the number of portfolios extracted.
+    """
+    try:
+        with open(readme_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        portfolios = extract_portfolio_data(lines)
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(portfolios, f, indent=2, ensure_ascii=False)
+
+        return len(portfolios)
+    except Exception as e:
+        print(f"Error creating feed.json: {e}")
+        return 0
+
+
 def main():
     # Open with explicit utf-8
     with open("README.md", "r", encoding="utf-8") as file:
@@ -445,8 +512,13 @@ def main():
     normalized_lines = [desc_bracket_re.sub(_norm_desc, line) for line in trimmed_lines]
     normalized_lines = [desc_paren_re.sub(_norm_desc, line) for line in normalized_lines]
 
+    # Remove extra spaces at the start/end inside bracketed descriptions
+    # Matches [ spaces content spaces ] and removes the extra spaces
+    bracket_padding_re = re.compile(r"\[\s+([^]]*?)\s+\]")
+    cleaned_bracket_lines = [bracket_padding_re.sub(r"[\1]", line) for line in normalized_lines]
+
     # New: remove duplicate URLs across the document (keep first occurrence)
-    url_deduped_lines, url_removed = remove_duplicate_urls(normalized_lines)
+    url_deduped_lines, url_removed = remove_duplicate_urls(cleaned_bracket_lines)
     if url_removed:
         print(f"Removed {url_removed} duplicate URL line(s) from README.md (kept first occurrences).")
 
@@ -487,6 +559,11 @@ def main():
     # Write back using utf-8 as well
     with open("README.md", "w", encoding="utf-8") as file:
         file.writelines(final_lines)
+
+    # Create/update feed.json with portfolio data
+    portfolio_count = create_feed_json()
+    if portfolio_count:
+        print(f"Created feed.json with {portfolio_count} portfolio entries.")
 
 
 if __name__ == "__main__":
